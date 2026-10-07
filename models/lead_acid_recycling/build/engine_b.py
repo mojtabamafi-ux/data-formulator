@@ -422,11 +422,12 @@ def eng_dcf(b):
         b.mark(S, tag, row)
         b.fcell(S, row, spec.C0, f)
 
+    # ارزشِ حقوق صاحبان سهام یک شاخصِ تک‌مقداری است (بر پایهٔ آخرین دوره)
     sh.add_row("DCF.eq_value", "ارزش حقوق صاحبان سهام (EV − بدهی خالص)",
                "میلیون ریال", "num")
-    b.frow(S, "DCF.eq_value", lambda t: "=%s-(%s-%s)"
-           % (b.tagref(S, "DCF.ev", 0), b.ref("ENG_FCF", "FCF.debt_close", t),
-              b.ref("ENG_FCF", "FCF.cash", t)))
+    b.fcell(S, sh.r - 1, spec.C0, "=%s-(%s-%s)"
+            % (b.tagref(S, "DCF.ev", 0), b.ref("ENG_FCF", "FCF.debt_close", 0),
+               b.ref("ENG_FCF", "FCF.cash", 0)))
     return sh
 
 
@@ -502,9 +503,215 @@ def eng_lev(b):
     return sh
 
 
+# ===================================================================== ENG_FCF
+def eng_fcf(b):
+    sh = b.sheet("ENG_FCF", "جریان‌های نقدی آزاد (FCF)",
+                 "تبدیل عملیات به EBITDA/EBIT/سود خالص، جریان نقد آزاد پروژه و "
+                 "سهامداران، جدول بدهی و ترازنامهٔ پروژه.", "engine")
+    S = "ENG_FCF"
+    LT = spec.NY - 1
+
+    def R(key, t=0):
+        return b.ref(S, key, t)
+
+    def C(key, t=0):
+        return b.ref("ENG_COST", key, t)
+
+    def X(key, t=0):
+        return b.ref("ENG_CAPEX", key, t)
+
+    def W(key, t=0):
+        return b.ref("ENG_WC", key, t)
+
+    def FI(key):
+        return b.ref("IN_FIN", key, 0)
+
+    def MA(key, t=0):
+        return b.ref("IN_MACRO", key, t)
+
+    kd_act = "(%s+%s)" % (FI("FIN.kd"), scen_coef(b, "KD"))
+    rs, ry = FI("FIN.repay_start"), FI("FIN.repay_years")
+
+    sh.section("الف) صورت سود و زیان")
+    sh.add_row("FCF.rev", "درآمد خالص", "میلیون ریال", "num")
+    b.frow(S, "FCF.rev", lambda t: "=" + b.ref("ENG_OPS", "OPS.rev", t))
+    for lab, key in [("هزینه‌های مستقیم تولید (DPC)", "EC.dpc"),
+                     ("هزینه‌های عملیاتی تولید (OPC)", "EC.opc"),
+                     ("هزینه‌های ثابت تولید (FPC)", "EC.fpc")]:
+        sh.add_row(None, lab, "میلیون ریال", "num")
+        b.frow_at(S, sh.r - 1, lambda t, key=key: "=" + C(key, t))
+    sh.add_row("FCF.cost", "جمع هزینه‌ها", "میلیون ریال", "num")
+    b.frow(S, "FCF.cost", lambda t: "=%s+%s+%s" % (C("EC.dpc", t), C("EC.opc", t), C("EC.fpc", t)))
+    sh.add_row("FCF.ebitda", "سود قبل بهره، مالیات و استهلاک (EBITDA)", "میلیون ریال", "num")
+    b.frow(S, "FCF.ebitda", lambda t: "=" + C("EC.ebitda", t))
+    sh.add_row("FCF.dep", "استهلاک", "میلیون ریال", "num")
+    b.frow(S, "FCF.dep", lambda t: "=" + X("CAPEX.dep_total", t))
+    sh.add_row("FCF.ebit", "سود عملیاتی (EBIT)", "میلیون ریال", "num")
+    b.frow(S, "FCF.ebit", lambda t: "=" + C("EC.ebit", t))
+
+    sh.gap()
+    sh.section("ب) جدول بدهی، خدمت دین و هزینه‌های مالی")
+    sh.add_row("FCF.debt_open", "مانده تسهیلات - افتتاحیه", "میلیون ریال", "num")
+    b.frow(S, "FCF.debt_open", lambda t: "=0" if t == 0 else "=" + R("FCF.debt_close", t - 1))
+    sh.add_row("FCF.draw", "برداشت تسهیلات", "میلیون ریال", "num")
+    b.frow(S, "FCF.draw", lambda t: "=IF(%s<=%s,%s*%s,0)"
+           % (MA("MAC.t", t), MA("MAC.constr_end"), FI("FIN.debt_share"),
+              X("CAPEX.cap_total", t)))
+    sh.add_row("FCF.idc", "سود سرمایه‌ای‌شده حین ساخت (IDC)", "میلیون ریال", "num")
+    b.frow(S, "FCF.idc", lambda t: "=" + X("CAPEX.idc", t))
+    sh.add_row("FCF.debt_base", "مبنای بازپرداخت (مانده در آستانهٔ بازپرداخت)",
+               "میلیون ریال", "num")
+    b.frow(S, "FCF.debt_base", lambda t: "=%s*(INDEX(%s,1,%s)+INDEX(%s,1,%s))"
+           % (FI("FIN.debt_share"), b.rng("ENG_CAPEX", "CAPEX.cap_cum", 0, LT), rs,
+              b.rng("ENG_CAPEX", "CAPEX.idc_cum", 0, LT), rs))
+    sh.add_row("FCF.principal", "بازپرداخت اصل تسهیلات", "میلیون ریال", "num")
+    b.frow(S, "FCF.principal", lambda t: "=MIN(IF(AND(%s>=%s,%s<=%s+%s-1),IF(%s=1,%s/%s,"
+                                         "-PPMT(%s,%s-%s+1,%s,%s)),0),%s+%s+%s)"
+           % (MA("MAC.t", t), rs, MA("MAC.t", t), rs, ry, FI("FIN.repay_method"),
+              R("FCF.debt_base", 0), ry, kd_act, MA("MAC.t", t), rs, ry,
+              R("FCF.debt_base", 0), R("FCF.debt_open", t), R("FCF.draw", t),
+              R("FCF.idc", t)))
+    sh.add_row("FCF.debt_close", "مانده تسهیلات - اختتامیه", "میلیون ریال", "num")
+    b.frow(S, "FCF.debt_close", lambda t: "=%s+%s+%s-%s"
+           % (R("FCF.debt_open", t), R("FCF.draw", t), R("FCF.idc", t),
+              R("FCF.principal", t)))
+    sh.add_row("FCF.int_lt", "هزینه سود تسهیلات بلندمدت", "میلیون ریال", "num")
+    b.frow(S, "FCF.int_lt", lambda t: "=IF(%s=1,0,IF(%s=1,%s*%s,IF(AND(%s>=%s,%s<=%s+%s-1),"
+                                      "-IPMT(%s,%s-%s+1,%s,%s),%s*%s)))"
+           % (MA("MAC.constr_flg", t), FI("FIN.repay_method"), kd_act,
+              R("FCF.debt_open", t), MA("MAC.t", t), rs, MA("MAC.t", t), rs, ry,
+              kd_act, MA("MAC.t", t), rs, ry, R("FCF.debt_base", 0),
+              kd_act, R("FCF.debt_open", t)))
+    sh.add_row("FCF.fees", "کارمزدها و هزینه‌های تأمین مالی", "میلیون ریال", "num")
+    b.frow(S, "FCF.fees", lambda t: "=%s*%s+IF(%s<=%s,%s*%s*MAX(0,SUM(%s)-%s),0)"
+           % (FI("FIN.fee_arr"), R("FCF.draw", t), MA("MAC.t", t), MA("MAC.constr_end"),
+              FI("FIN.fee_com"), FI("FIN.debt_share"),
+              b.rng("ENG_CAPEX", "CAPEX.cap_total", 0, LT), X("CAPEX.cap_cum", t)))
+    sh.add_row("FCF.int_st", "هزینه سود تسهیلات کوتاه‌مدت", "میلیون ریال", "num")
+    b.frow(S, "FCF.int_st", lambda t: "=%s*%s" % (FI("FIN.kd_st"), W("WC.stloan", t)))
+    sh.add_row("FCF.int_inc", "درآمد غیرعملیاتی (سود سپرده)", "میلیون ریال", "num")
+    b.frow(S, "FCF.int_inc", lambda t: "=%s*%s" % (FI("FIN.i_income"), R("FCF.cash_open", t)))
+    sh.add_row("FCF.ebt", "سود قبل از مالیات (EBT)", "میلیون ریال", "num")
+    b.frow(S, "FCF.ebt", lambda t: "=%s-%s-%s-%s+%s"
+           % (R("FCF.ebit", t), R("FCF.int_lt", t), R("FCF.fees", t),
+              R("FCF.int_st", t), R("FCF.int_inc", t)))
+    sh.add_row("FCF.tax", "مالیات بر درآمد", "میلیون ریال", "num")
+    b.frow(S, "FCF.tax", lambda t: "=MAX(0,%s)*%s" % (R("FCF.ebt", t), MA("MAC.tax")))
+    sh.add_row("FCF.ni", "سود خالص", "میلیون ریال", "num")
+    b.frow(S, "FCF.ni", lambda t: "=%s-%s" % (R("FCF.ebt", t), R("FCF.tax", t)))
+
+    sh.gap()
+    sh.section("ج) جریان‌های نقدی آزاد")
+    sh.add_row("FCF.nopat", "NOPAT", "میلیون ریال", "num")
+    b.frow(S, "FCF.nopat", lambda t: "=" + C("EC.nopat", t))
+    sh.add_row("FCF.opcf", "جریان نقد عملیاتیِ عملیاتی (NOPAT + استهلاک)",
+               "میلیون ریال", "num")
+    b.frow(S, "FCF.opcf", lambda t: "=%s+%s" % (R("FCF.nopat", t), R("FCF.dep", t)))
+    sh.add_row("FCF.dwc", "تغییرات سرمایه در گردش", "میلیون ریال", "num")
+    b.frow(S, "FCF.dwc", lambda t: "=" + W("WC.dwc", t))
+    sh.add_row("FCF.capex", "سرمایه‌گذاری ثابت و جایگزینی", "میلیون ریال", "num")
+    b.frow(S, "FCF.capex", lambda t: "=%s+%s"
+           % (X("CAPEX.cap_total", t), X("CAPEX.repl_total", t)))
+    sh.add_row("FCF.fcff", "جریان نقد آزاد پروژه (FCFF)", "میلیون ریال", "num")
+    b.frow(S, "FCF.fcff", lambda t: "=%s-%s-%s"
+           % (R("FCF.opcf", t), R("FCF.capex", t), R("FCF.dwc", t)))
+    row = sh.r
+    sh.add_row("FCF.fcff_cum", "FCFF تجمعی", "میلیون ریال", "num")
+    b.mark(S, "FCF.fcff_cum", row)
+    b.frow_at(S, row, lambda t: "=" + R("FCF.fcff", 0) if t == 0
+              else "=" + R("FCF.fcff_cum", t - 1) + "+" + R("FCF.fcff", t))
+    sh.add_row("FCF.fcff_rep", "FCFF تکرارپذیر (بدون CAPEX)", "میلیون ریال", "num")
+    b.frow(S, "FCF.fcff_rep", lambda t: "=%s-%s" % (R("FCF.opcf", t), R("FCF.dwc", t)))
+    sh.add_row("FCF.cfads", "جریان نقد در دسترس خدمت دین (CFADS)", "میلیون ریال", "num")
+    b.frow(S, "FCF.cfads", lambda t: "=%s-%s-%s"
+           % (R("FCF.ebitda", t), R("FCF.tax", t), R("FCF.dwc", t)))
+    sh.add_row("FCF.debt_service", "خدمت دین (اصل + سود + کارمزد + سود کوتاه‌مدت)",
+               "میلیون ریال", "num")
+    b.frow(S, "FCF.debt_service", lambda t: "=%s+%s+%s+%s"
+           % (R("FCF.principal", t), R("FCF.int_lt", t), R("FCF.fees", t),
+              R("FCF.int_st", t)))
+    sh.add_row("FCF.dscr", "DSCR", "ضریب", "num2")
+    b.frow(S, "FCF.dscr", lambda t: '=IFERROR(%s/%s,"─")'
+           % (R("FCF.cfads", t), R("FCF.debt_service", t)))
+    sh.add_row("FCF.icr", "نسبت پوشش بهره (ICR)", "ضریب", "num2")
+    b.frow(S, "FCF.icr", lambda t: '=IFERROR(%s/%s,"─")'
+           % (R("FCF.ebit", t), R("FCF.int_lt", t)))
+
+    sh.gap()
+    sh.section("د) جریان وجوه نقد، آورده نقدی و تقسیم سود")
+    sh.add_row("FCF.cash_open", "نقد افتتاحیه", "میلیون ریال", "num")
+    b.frow(S, "FCF.cash_open", lambda t: "=0" if t == 0 else "=" + R("FCF.cash", t - 1))
+    sh.add_row("FCF.cfo", "جریان نقد عملیاتی", "میلیون ریال", "num")
+    b.frow(S, "FCF.cfo", lambda t: "=%s+%s-%s"
+           % (R("FCF.ni", t), R("FCF.dep", t), R("FCF.dwc", t)))
+    sh.add_row("FCF.cfi", "جریان نقد سرمایه‌گذاری", "میلیون ریال", "num")
+    b.frow(S, "FCF.cfi", lambda t: "=-%s" % R("FCF.capex", t))
+    sh.add_row("FCF.cash_pre", "وجوه در دسترس پیش از تأمین مالی", "میلیون ریال", "num")
+    b.frow(S, "FCF.cash_pre", lambda t: "=%s+%s+%s+%s-%s+%s"
+           % (R("FCF.cash_open", t), R("FCF.cfo", t), R("FCF.cfi", t), R("FCF.draw", t),
+              R("FCF.principal", t), W("WC.dstloan", t)))
+    sh.add_row("FCF.div", "سود تقسیمی", "میلیون ریال", "num")
+    b.frow(S, "FCF.div", lambda t: "=MIN(%s*MAX(0,%s),MAX(0,%s-%s))"
+           % (FI("FIN.payout"), R("FCF.ni", t), R("FCF.cash_pre", t), W("WC.min_cash", t)))
+    sh.add_row("FCF.equity_in", "آورده نقدی سهامداران (تأمین کسری نقد)",
+               "میلیون ریال", "num")
+    b.frow(S, "FCF.equity_in", lambda t: "=MAX(0,%s-(%s-%s))"
+           % (W("WC.min_cash", t), R("FCF.cash_pre", t), R("FCF.div", t)))
+    sh.add_row("FCF.cff", "جریان نقد تأمین مالی", "میلیون ریال", "num")
+    b.frow(S, "FCF.cff", lambda t: "=%s-%s+%s+%s-%s"
+           % (R("FCF.draw", t), R("FCF.principal", t), W("WC.dstloan", t),
+              R("FCF.equity_in", t), R("FCF.div", t)))
+    sh.add_row("FCF.dcash", "تغییرات نقد", "میلیون ریال", "num")
+    b.frow(S, "FCF.dcash", lambda t: "=%s+%s+%s"
+           % (R("FCF.cfo", t), R("FCF.cfi", t), R("FCF.cff", t)))
+    sh.add_row("FCF.cash", "نقد اختتامیه", "میلیون ریال", "num")
+    b.frow(S, "FCF.cash", lambda t: "=%s+%s" % (R("FCF.cash_open", t), R("FCF.dcash", t)))
+    row = sh.r
+    sh.add_row("FCF.equity_cum", "سرمایه پرداختی انباشته", "میلیون ریال", "num")
+    b.mark(S, "FCF.equity_cum", row)
+    b.frow_at(S, row, lambda t: "=" + R("FCF.equity_in", 0) if t == 0
+              else "=" + R("FCF.equity_cum", t - 1) + "+" + R("FCF.equity_in", t))
+    row = sh.r
+    sh.add_row("FCF.re_cum", "سود انباشته", "میلیون ریال", "num")
+    b.mark(S, "FCF.re_cum", row)
+    b.frow_at(S, row, lambda t: "=%s-%s" % (R("FCF.ni", 0), R("FCF.div", 0)) if t == 0
+              else "=" + R("FCF.re_cum", t - 1) + "+" + R("FCF.ni", t) + "-" + R("FCF.div", t))
+    sh.add_row("FCF.equity", "حقوق صاحبان سهام", "میلیون ریال", "num")
+    b.frow(S, "FCF.equity", lambda t: "=%s+%s" % (R("FCF.equity_cum", t), R("FCF.re_cum", t)))
+    sh.add_row("FCF.fcfe", "جریان نقد آزاد سهامداران (FCFE)", "میلیون ریال", "num")
+    b.frow(S, "FCF.fcfe", lambda t: "=%s+%s-%s-%s+%s-%s+%s"
+           % (R("FCF.ni", t), R("FCF.dep", t), R("FCF.capex", t), R("FCF.dwc", t),
+              R("FCF.draw", t), R("FCF.principal", t), W("WC.dstloan", t)))
+
+    sh.gap()
+    sh.section("ه‍) ترازنامهٔ پروژه")
+    sh.add_row("FCF.ca", "دارایی‌های جاری (نقد + موجودی + دریافتنی)", "میلیون ریال", "num")
+    b.frow(S, "FCF.ca", lambda t: "=%s+%s+%s"
+           % (R("FCF.cash", t), W("WC.inv", t), W("WC.ar", t)))
+    sh.add_row("FCF.nfa", "دارایی‌های ثابت خالص", "میلیون ریال", "num")
+    b.frow(S, "FCF.nfa", lambda t: "=" + X("CAPEX.nbv", t))
+    sh.add_row("FCF.assets", "جمع دارایی‌ها", "میلیون ریال", "num")
+    b.frow(S, "FCF.assets", lambda t: "=%s+%s" % (R("FCF.ca", t), R("FCF.nfa", t)))
+    sh.add_row("FCF.cl", "بدهی‌های جاری (پرداختنی + مالیات + تسهیلات کوتاه‌مدت)",
+               "میلیون ریال", "num")
+    b.frow(S, "FCF.cl", lambda t: "=%s+%s+%s"
+           % (W("WC.ap", t), W("WC.tax_pay", t), W("WC.stloan", t)))
+    sh.add_row("FCF.ltd", "تسهیلات بلندمدت", "میلیون ریال", "num")
+    b.frow(S, "FCF.ltd", lambda t: "=" + R("FCF.debt_close", t))
+    sh.add_row("FCF.liab", "جمع بدهی‌ها", "میلیون ریال", "num")
+    b.frow(S, "FCF.liab", lambda t: "=%s+%s" % (R("FCF.cl", t), R("FCF.ltd", t)))
+    sh.add_row("FCF.eq_bs", "حقوق صاحبان سهام", "میلیون ریال", "num")
+    b.frow(S, "FCF.eq_bs", lambda t: "=" + R("FCF.equity", t))
+    sh.add_row("FCF.bs_check", "کنترل تراز (باید صفر باشد)", "میلیون ریال", "num1")
+    b.frow(S, "FCF.bs_check", lambda t: "=%s-%s-%s"
+           % (R("FCF.assets", t), R("FCF.liab", t), R("FCF.eq_bs", t)))
+    return sh
+
+
 def build(b):
     eng_capex(b)
     eng_alloc(b)
     eng_wc(b)
+    eng_fcf(b)
     eng_dcf(b)
     eng_lev(b)
