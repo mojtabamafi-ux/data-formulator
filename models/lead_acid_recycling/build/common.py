@@ -101,8 +101,10 @@ class Sheet:
                 ws.cell(7, col, t).number_format = FMT["idx"]
                 ws.cell(8, col, self.book.start_year + t).number_format = FMT["idx"]
             else:                                    # موتور/خروجی: ارجاع به IN_MACRO
-                ws.cell(7, col, self.book.ref("IN_MACRO", "MAC.t", t)).number_format = FMT["idx"]
-                ws.cell(8, col, self.book.ref("IN_MACRO", "MAC.year", t)).number_format = FMT["idx"]
+                ws.cell(7, col, "=" + self.book.ref("IN_MACRO", "MAC.t", t,
+                                                    abs_col=False)).number_format = FMT["idx"]
+                ws.cell(8, col, "=" + self.book.ref("IN_MACRO", "MAC.year", t,
+                                                    abs_col=False)).number_format = FMT["idx"]
             ws.cell(7, col).fill = HEAD_FILL
             ws.cell(8, col).fill = HEAD_FILL
         self.r = 9
@@ -119,6 +121,13 @@ class Sheet:
         c.fill = SECTION_FILL
         for col in range(2, spec.C0 + spec.NY):
             self.ws.cell(r, col).fill = SECTION_FILL
+        if row is None:
+            self.r = r + 1
+        return r
+
+    def subhead(self, text, row=None):
+        r = row or self.r
+        self.ws.cell(r, 1, text).font = Font(bold=True, size=10)
         if row is None:
             self.r = r + 1
         return r
@@ -199,8 +208,8 @@ class Sheet:
                     self.ws.cell(r + i, col, v).number_format = FMT["idx"]
                 else:
                     key = "MAC.t" if i == 0 else "MAC.year"
-                    self.ws.cell(r + i, col,
-                                 self.book.ref("IN_MACRO", key, t)).number_format = FMT["idx"]
+                    self.ws.cell(r + i, col, "=" + self.book.ref(
+                        "IN_MACRO", key, t, abs_col=False)).number_format = FMT["idx"]
                 self.ws.cell(r + i, col).fill = HEAD_FILL
         if row is None:
             self.r = r + 2
@@ -228,9 +237,11 @@ class Book:
         self.wb = Workbook()
         self.wb.remove(self.wb.active)
         self.keys = {}          # {(شیت، کلید): سطر}
+        self.marks = {}         # {(شیت، برچسب): سطر} برای سطرهای بدون کلید
         self.sheets = {}        # {نام شیت: Sheet}
         self.start_year = start_year
         self._pending = set()
+        self._pending_tags = set()
 
     # ------------------------------------------------------- ساختِ کاربرگ
     def sheet(self, name, title, subtitle, layer, **kw):
@@ -241,6 +252,18 @@ class Book:
     # ---------------------------------------------------------- آدرس‌دهی
     def row_of(self, sheet, key):
         return self.keys[(sheet, key)]
+
+    # --------------------------------------------------- برچسبِ سطر (بدون کلید)
+    def mark(self, sheet, tag, row):
+        """ثبتِ شمارهٔ سطر برای سطری که در ستونِ B کلید ندارد (تا فرمول‌ها
+        نمادین بمانند و با جابه‌جاییِ سطرها نشکنند)."""
+        self.marks[(sheet, tag)] = row
+        return row
+
+    def tagref(self, sheet, tag, t=0):
+        """ارجاعِ نمادین به سطرِ برچسب‌دار (در پایان به آدرس تبدیل می‌شود)"""
+        self._pending_tags.add((sheet, tag))
+        return "@@%s|%s|%d@@" % (sheet, tag, t)
 
     def ref(self, sheet, key, t=0, abs_row=True, abs_col=True):
         """آدرسِ مطلقِ یک سلول بر پایهٔ کلید و شمارهٔ دوره"""
@@ -268,6 +291,13 @@ class Book:
     def cellref(self, sheet, row, col):
         return "'%s'!$%s$%d" % (sheet, get_column_letter(col), row)
 
+    def rng_at(self, sheet, r1, c1, r2=None, c2=None):
+        """بازهٔ صریح بر پایهٔ شمارهٔ سطر و ستون"""
+        r2 = r1 if r2 is None else r2
+        c2 = c1 if c2 is None else c2
+        return "'%s'!$%s$%d:$%s$%d" % (sheet, get_column_letter(c1), r1,
+                                       get_column_letter(c2), r2)
+
     def src(self, sheet, key, t=0):
         """نامِ شیت به‌صورتِ کوتاه برای نمایش (برای برچسب‌های گزارش)"""
         return "%s.%s[%d]" % (sheet, key, t)
@@ -283,6 +313,11 @@ class Book:
         r = self.keys[(sheet, key)]
         for t in rng_:
             self.wb[sheet].cell(r, spec.C0 + t, tmpl(t))
+
+    def frow_at(self, sheet, row, tmpl):
+        """نوشتنِ فرمول برای همهٔ دوره‌ها در سطرِ داده‌شده (بدونِ کلید)"""
+        for t in range(spec.NY):
+            self.wb[sheet].cell(row, spec.C0 + t, tmpl(t))
 
     def fscalar(self, sheet, key, formula, col=None):
         r = self.keys[(sheet, key)]
@@ -308,29 +343,43 @@ class Book:
         return c
 
     # ---------------------------------------------------------- حلِ ارجاع‌ها
-    def resolve(self):
-        """تبدیلِ نشان‌های موقت به آدرسِ واقعی در همهٔ سلول‌ها"""
-        if self._pending:
-            missing = [k for k in self._pending if k not in self.keys]
-            if missing:
-                raise KeyError("کلیدهای تعریف‌نشده: %s" % missing)
-        n = 0
+    def resolve(self, strict=True):
+        """تبدیلِ نشان‌های موقت به آدرسِ واقعی در همهٔ سلول‌ها.
+
+        strict=True (حالتِ کاملِ مدل): هر کلید یا برچسبِ ناشناخته خطا می‌دهد.
+        strict=False (ساختِ مرحله‌به‌مرحله): نشان‌های مربوط به شیت‌های ساخته‌نشده
+        سرِ جای خود می‌مانند و شمارِ آن‌ها برگردانده می‌شود.
+        """
+        if strict:
+            if self._pending:
+                missing = [k for k in self._pending if k not in self.keys]
+                if missing:
+                    raise KeyError("کلیدهای تعریف‌نشده: %s" % missing)
+            if self._pending_tags:
+                missing = [k for k in self._pending_tags if k not in self.marks]
+                if missing:
+                    raise KeyError("برچسب‌های ثبت‌نشده: %s" % missing)
+        self.unresolved = 0
         for ws in self.wb.worksheets:
             for row in ws.iter_rows():
                 for c in row:
                     v = c.value
                     if isinstance(v, str) and "@@" in v:
                         c.value = PLACEHOLDER.sub(self._resolve_one, v)
-                        n += 1
-        return n
+                        self.unresolved += c.value.count("@@") // 2
+        return self.unresolved
 
     def _resolve_one(self, m):
         sheet, key, t = m.group(1), m.group(2), int(m.group(3))
-        r = self.keys[(sheet, key)]
+        r = self.keys.get((sheet, key))
+        if r is None:
+            r = self.marks.get((sheet, key))
+        if r is None:
+            return m.group(0)          # هنوز ساخته نشده (ساختِ مرحله‌به‌مرحله)
         col = get_column_letter(spec.C0 + t)
         return "'%s'!$%s$%d" % (sheet, col, r)
 
-    def save(self, path):
-        self.resolve()
+    def save(self, path, strict=True):
+        left = self.resolve(strict=strict)
         self.wb.save(path)
-        return path
+        return left

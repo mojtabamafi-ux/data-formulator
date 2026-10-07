@@ -24,21 +24,30 @@ def build(path=None, only=None):
     b = common.Book(start_year=inputs.START_YEAR)
     inputs.build(b)
 
+    # لایه‌های موتور و خروجی به‌تدریج افزوده می‌شوند؛ اگر ماژولی هنوز نوشته
+    # نشده باشد، ساخت ادامه می‌یابد تا بتوان مرحله‌به‌مرحله مقایسه کرد.
+    done = []
     if only != "input":
-        import engine_a
-        import engine_b
-        engine_a.build(b)
-        engine_b.build(b)
-    if only in (None, "output", "engine"):
-        import outputs
-        outputs.build(b)
+        for mod in ("engine_a", "engine_b", "outputs"):
+            try:
+                m = __import__(mod)
+            except ImportError:
+                continue
+            m.build(b)
+            done.append(mod)
+    if "outputs" not in done:
+        print("  (هنوز ساخته‌نشده: %s)" % "، ".join(
+            x for x in ("engine_a", "engine_b", "outputs") if x not in done))
 
     # پنهان کردنِ شیت‌های موتور (طبق نقشه: لایهٔ موتور پنهان است)
     for name in spec.ENGINE_SHEETS:
         if name in b.wb.sheetnames:
             b.wb[name].sheet_state = "hidden"
 
-    n = b.save(path)
+    complete = all(x in done for x in ("engine_a", "engine_b", "outputs"))
+    left = b.save(path, strict=complete)
+    if left:
+        print("  ⚠ %d ارجاعِ حل‌نشده (شیت‌های ساخته‌نشده)" % left)
     wb = load_workbook(path)
     nform = sum(1 for ws in wb.worksheets for row in ws.iter_rows() for c in row
                 if isinstance(c.value, str) and c.value.startswith("="))

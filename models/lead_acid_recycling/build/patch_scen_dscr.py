@@ -47,10 +47,10 @@ def kratio(scen):
 def new_formulas(scen, L):
     o = BLOCK_STEP * scen
     kr = kratio(scen)
-    debt = ("='ENG_FCF'!%s$24+'ENG_FCF'!%s$26*%s+'ENG_FCF'!%s$27+'ENG_FCF'!%s$28"
+    debt = ("='ENG_FCF'!$%s$24+'ENG_FCF'!$%s$26*%s+'ENG_FCF'!$%s$27+'ENG_FCF'!$%s$28"
             % (L, L, kr, L, L))
-    cfads = ("='ENG_SCEN'!%s%d-MAX(0,'ENG_SCEN'!%s%d-('ENG_FCF'!%s$26*%s+'ENG_FCF'!%s$27"
-             "+'ENG_FCF'!%s$28-'ENG_FCF'!%s$29))*'IN_MACRO'!$D$14-'ENG_SCEN'!%s%d"
+    cfads = ("='ENG_SCEN'!$%s$%d-MAX(0,'ENG_SCEN'!$%s$%d-('ENG_FCF'!$%s$26*%s+'ENG_FCF'!$%s$27"
+             "+'ENG_FCF'!$%s$28-'ENG_FCF'!$%s$29))*'IN_MACRO'!$D$14-'ENG_SCEN'!$%s$%d"
              % (L, 49 + o, L, 50 + o, L, kr, L, L, L, L, 54 + o))
     return cfads, debt
 
