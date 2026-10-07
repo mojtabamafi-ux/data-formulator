@@ -238,6 +238,8 @@ def eng_alloc(b):
                       % (b.ref(S, "ALC.cost.%d" % (i + 1), t),
                          b.cellref(S, b.row_of(S, "ALC.w.%d" % (i + 1)), spec.C0 + j)))
 
+    b.mark("ENG_ALLOC", "matrix0", matrix_rows[(0, 0)])
+
     # ------------------------------------------- د) جمع تخصیص‌یافته به هر ایستگاه
     sh.gap()
     sh.section("د) جمع تخصیص‌یافته به هر ایستگاه")
@@ -712,6 +714,212 @@ def build(b):
     eng_capex(b)
     eng_alloc(b)
     eng_wc(b)
+    eng_cost(b)
     eng_fcf(b)
     eng_dcf(b)
     eng_lev(b)
+
+
+# ==================================================================== ENG_COST
+DRIVERS = [("THROUGHPUT", "جریان مواد (تن/سال در ظرفیت طراحی)", "تن/سال"),
+           ("MACHINE_HOURS", "ساعت کار ماشین در سال (طراحی)", "ساعت/سال"),
+           ("HEADCOUNT", "تعداد نیروی انسانی مستقر", "نفر"),
+           ("POWER", "توان نصب‌شده", "کیلووات"),
+           ("AREA", "مساحت اشغالی", "m2"),
+           ("WATER", "مصرف آب در سال (طراحی)", "m3/سال")]
+
+
+def eng_cost(b):
+    from openpyxl.utils import get_column_letter
+    sh = b.sheet("ENG_COST", "تفکیک سه‌لایه‌ای هزینه‌ها (FPC / OPC / DPC)",
+                 "ساخت ماتریس هزینه به تفکیک طبقه، ایستگاه و سال و محاسبهٔ بهای "
+                 "تمام‌شدهٔ هر واحد.", "engine")
+    S = "ENG_COST"
+    NS = spec.NS
+    ITEMS = inputs.COST_ITEMS
+    NI = len(ITEMS)
+
+    def R(key, t=0):
+        return b.ref(S, key, t)
+
+    def O(key, t=0):
+        return b.ref("ENG_OPS", key, t)
+
+    def X(key, t=0):
+        return b.ref("ENG_CAPEX", key, t)
+
+    def IT(i, col):
+        """ستونِ col از ردیفِ قلمِ هزینهٔ i در IN_COST (4=طبقه، 5=مبنا، 6=پارامتر،
+        7=شاخص تعدیل، 8=مبنای تخصیص، 9=رفتار)"""
+        code = ITEMS[i][0]
+        return b.cellref("IN_COST", b.row_of("IN_COST", code), col)
+
+    # ------------------------------------------- الف) محرک‌های تخصیص
+    sh.section("الف) جدول محرک‌های تخصیص (بازتاب از لایهٔ ورودی)")
+    r_d0 = sh.r
+    for key, lab, unit in DRIVERS:
+        row = sh.r
+        sh.add_row(key, lab, unit, "num")
+        for j in range(NS):
+            b.fcell(S, row, spec.C0 + j,
+                    "=" + b.cellref("IN_TECH", b.row_of("IN_TECH", key), spec.C0 + j))
+        c = sh.ws.cell(row, spec.C0 + NS,
+                       "=SUM(%s%d:%s%d)" % (get_column_letter(spec.C0), row,
+                                             get_column_letter(spec.C0 + NS - 1), row))
+        c.number_format = common.FMT["num"]
+    r_d1 = sh.r - 1
+    drv_rng = b.rng_at(S, r_d0, spec.C0, r_d1, spec.C0 + NS - 1)
+    drv_lab = b.rng_at(S, r_d0, 2, r_d1, 2)
+    drv_tot = b.rng_at(S, r_d0, spec.C0 + NS, r_d1, spec.C0 + NS)
+
+    # ------------------------------------------- ب) وزن تخصیص هر قلم
+    sh.gap()
+    sh.section("ب) وزن تخصیص هر قلم هزینه به ایستگاه‌ها")
+    for i, item in enumerate(ITEMS):
+        key = "EC.w.%d" % i
+        row = sh.r
+        sh.add_row(key, "وزن %s" % item[0], "درصد", "pct")
+        ab = IT(i, 8)
+        for j in range(NS):
+            b.fcell(S, row, spec.C0 + j,
+                    '=IF(%s="SRV",0,IFERROR(INDEX(%s,MATCH(%s,%s,0),%d)'
+                    '/INDEX(%s,MATCH(%s,%s,0)),0))'
+                    % (ab, drv_rng, ab, drv_lab, j + 1, drv_tot, ab, drv_lab))
+
+    # ------------------------------------------- ج) هزینهٔ سالانهٔ هر قلم
+    sh.gap()
+    sh.section("ج) هزینهٔ سالانهٔ هر قلم هزینه")
+    _m0 = b.marks[("ENG_ALLOC", "matrix0")]
+    _m1 = _m0 + spec.NS * len(inputs.SERVICE_CENTERS) - 1
+    alloc = b.rng_at("ENG_ALLOC", _m0, spec.C0, _m1, spec.C0 + spec.NY - 1)
+    pay_head = b.rng_at("IN_COST", b.row_of("IN_COST", "PAY1"), 4,
+                        b.row_of("IN_COST", "PAY5"), 4)
+    pay_sal = b.rng_at("IN_COST", b.row_of("IN_COST", "PAY1"), 5,
+                       b.row_of("IN_COST", "PAY5"), 5)
+
+    def idx_expr(i, t):
+        g = IT(i, 7)
+        return ('IF(%s="FX",%s,IF(%s="PPI",%s,IF(%s="ENERGY",%s,IF(%s="WAGE",%s,'
+                'IF(%s="CPI",%s,1)))))'
+                % (g, scen_idx(b, "idx_fx", t), g, scen_idx(b, "idx_ppi", t),
+                   g, scen_idx(b, "idx_energy", t), g, scen_idx(b, "idx_wage", t),
+                   g, scen_idx(b, "idx_infl", t)))
+
+    for i, item in enumerate(ITEMS):
+        key = "EC.tot.%d" % i
+        sh.add_row(key, "%s | %s" % (item[0], item[1]), "میلیون ریال", "num")
+        e, f, g, h = IT(i, 5), IT(i, 6), IT(i, 7), IT(i, 9)
+        n = 'IFERROR(VALUE(MID(%s,FIND(":",%s)+1,2)),1)' % (f, f)
+        idx = idx_expr(i, 0)
+
+        def tmpl(t, i=i, e=e, f=f, g=g, h=h, n=n):
+            ix = idx_expr(i, t)
+            return ("=%s*IF(%s=\"SCRAP_LME\",%s*%s*%s,"
+                    "IF(%s=\"PER_TON_BATT\",%s*%s*%s,"
+                    "IF(%s=\"PER_TON_PROD\",%s*%s*%s,"
+                    "IF(%s=\"PER_KWH\",%s*%s*%s,"
+                    "IF(%s=\"PER_M3\",%s*%s*%s,"
+                    "IF(%s=\"ANNUAL\",%s*%s,"
+                    "IF(%s=\"PCT_REV\",%s*%s,"
+                    "IF(%s=\"PCT_ASSET\",%s*%s,"
+                    "IF(%s=\"DEP\",%s,"
+                    "IF(%s=\"PAY\",INDEX(%s,%s)*INDEX(%s,%s)*%s*%s*%s,"
+                    "IF(%s=\"SRV\",SUM(INDEX(%s,(%s-1)*6+1,1):INDEX(%s,%s*6,1)),0)"
+                    "))))))))))*IF(%s=\"DEP\",%s,IF(%s=\"V\",IF(%s=\"SCRAP_LME\",%s,%s),%s))"
+                    % (b.ref("IN_MACRO", "MAC.ops_flg", t),
+                       e, O("OPS.intake", t), f, scen_idx(b, "idx_lme_fx", t),
+                       e, O("OPS.intake", t), f, ix,
+                       e, O("OPS.prod_total", t), f, ix,
+                       e, O("OPS.kwh", t), f, ix,
+                       e, O("OPS.water", t), f, ix,
+                       e, f, ix,
+                       e, O("OPS.rev", t), f,
+                       e, X("CAPEX.nbv", t), f,
+                       e, X("CAPEX.dep_total", t),
+                       e, pay_head, n, pay_sal, n,
+                       b.ref("IN_COST", "CST.months", 0),
+                       b.ref("IN_COST", "CST.bonus", 0), scen_idx(b, "idx_wage", t),
+                       e, alloc, n, alloc, n,
+                       e, scen_coef(b, "CAPEX"), h, e,
+                       scen_coef(b, "RM"), scen_coef(b, "VAR"), scen_coef(b, "FIX")))
+
+        b.frow(S, key, tmpl)
+
+    # ------------------------------------------- د) تخصیص به ایستگاه‌ها
+    sh.gap()
+    sh.section("د) تخصیص هر قلم هزینه به ایستگاه‌ها")
+    mrow = {}
+    for i, item in enumerate(ITEMS):
+        for j in range(NS):
+            row = sh.r
+            sh.add_row(None, "%s ← ایستگاه %d" % (item[0], j + 1), "میلیون ریال", "num")
+            mrow[(i, j)] = row
+            b.frow_at(S, row, lambda t, i=i, j=j: "=%s*%s"
+                      % (R("EC.tot.%d" % i, t),
+                         b.cellref(S, b.row_of(S, "EC.w.%d" % i), spec.C0 + j)))
+
+    # ------------------------------------------- ه‍) جمع به تفکیک طبقه و ایستگاه
+    sh.gap()
+    sh.section("ه‍) جمع هزینه‌ها به تفکیک طبقه و ایستگاه")
+    cls_rows = {}
+    for cls in ("DPC", "OPC", "FPC"):
+        idxs = [i for i, it in enumerate(ITEMS) if it[3] == cls]
+        for j in range(NS):
+            key = "EC.%s.st%d" % (cls, j)
+            row = sh.r
+            sh.add_row(key, "%s - ایستگاه %d" % (cls, j + 1), "میلیون ریال", "num")
+            cls_rows[(cls, j)] = row
+            b.frow_at(S, row, lambda t, idxs=idxs, j=j: "=%s" % "+".join(
+                "%s%d" % (get_column_letter(spec.C0 + t), mrow[(i, j)]) for i in idxs))
+
+    # ------------------------------------------- و) جمع کل و بهای واحد
+    sh.gap()
+    sh.section("و) جمع کل، بهای واحد و سود عملیاتی")
+    for cls, key in (("DPC", "EC.dpc"), ("OPC", "EC.opc"), ("FPC", "EC.fpc")):
+        sh.add_row(key, "جمع %s" % cls, "میلیون ریال", "num")
+        b.frow(S, key, lambda t, cls=cls: "=%s" % "+".join(
+            "%s%d" % (get_column_letter(spec.C0 + t), cls_rows[(cls, j)])
+            for j in range(NS)))
+    sh.add_row("EC.total", "جمع هزینه‌های تولیدی و عملیاتی", "میلیون ریال", "num")
+    b.frow(S, "EC.total", lambda t: "=%s+%s+%s"
+           % (R("EC.dpc", t), R("EC.opc", t), R("EC.fpc", t)))
+    sh.add_row("EC.rm", "هزینهٔ مواد اولیه (باتری ضایعاتی)", "میلیون ریال", "num")
+    b.frow(S, "EC.rm", lambda t: "=" + R("EC.tot.0", t))
+    var_idx = [i for i, it in enumerate(ITEMS) if it[8] == "V"]
+    fix_idx = [i for i, it in enumerate(ITEMS) if it[8] == "F"]
+
+    def rel_sum(idxs, t):
+        return "+".join("%s%d" % (get_column_letter(spec.C0 + t),
+                                  b.row_of(S, "EC.tot.%d" % i)) for i in idxs)
+
+    sh.add_row("EC.var_ex_rm", "جمع هزینه‌های متغیر (بدون مواد اولیه)", "میلیون ریال", "num")
+    b.frow(S, "EC.var_ex_rm", lambda t: "=" + rel_sum([i for i in var_idx if i != 0], t))
+    sh.add_row("EC.var_total", "جمع هزینه‌های متغیر", "میلیون ریال", "num")
+    b.frow(S, "EC.var_total", lambda t: "=" + rel_sum(var_idx, t))
+    sh.add_row("EC.fixed_total", "جمع هزینه‌های ثابت", "میلیون ریال", "num")
+    b.frow(S, "EC.fixed_total", lambda t: "=" + rel_sum(fix_idx, t))
+    sh.add_row("EC.fixed_cash", "هزینهٔ ثابت نقدی (بدون استهلاک)", "میلیون ریال", "num")
+    b.frow(S, "EC.fixed_cash", lambda t: "=%s-%s"
+           % (R("EC.fixed_total", t), X("CAPEX.dep_total", t)))
+    for key, lab, src in [("EC.cost_per_ton", "بهای تمام‌شدهٔ هر تن محصول", "EC.total"),
+                          ("EC.dpc_per_ton", "هزینهٔ DPC هر تن", "EC.dpc"),
+                          ("EC.opc_per_ton", "هزینهٔ OPC هر تن", "EC.opc"),
+                          ("EC.fpc_per_ton", "هزینهٔ FPC هر تن", "EC.fpc")]:
+        sh.add_row(key, lab, "میلیون ریال/تن", "num1")
+        b.frow(S, key, lambda t, src=src: "=IFERROR(%s/%s,0)"
+               % (R(src, t), O("OPS.sold_tons", t)))
+
+    # ------------------------------------------- ز) سود عملیاتی
+    sh.gap()
+    sh.section("ز) سود عملیاتی و مالیات عملیاتی (مبنای جریان نقد)")
+    sh.add_row("EC.ebitda", "سود قبل بهره، مالیات و استهلاک (EBITDA)", "میلیون ریال", "num")
+    b.frow(S, "EC.ebitda", lambda t: "=%s-%s-%s"
+           % (O("OPS.rev", t), R("EC.var_total", t), R("EC.fixed_cash", t)))
+    sh.add_row("EC.ebit", "سود عملیاتی (EBIT)", "میلیون ریال", "num")
+    b.frow(S, "EC.ebit", lambda t: "=%s-%s" % (R("EC.ebitda", t), X("CAPEX.dep_total", t)))
+    sh.add_row("EC.tax_op", "مالیات عملیاتی (بر مبنای EBIT)", "میلیون ریال", "num")
+    b.frow(S, "EC.tax_op", lambda t: "=MAX(0,%s)*%s"
+           % (R("EC.ebit", t), b.ref("IN_MACRO", "MAC.tax", 0)))
+    sh.add_row("EC.nopat", "NOPAT (سود عملیاتی پس از مالیات)", "میلیون ریال", "num")
+    b.frow(S, "EC.nopat", lambda t: "=%s-%s" % (R("EC.ebit", t), R("EC.tax_op", t)))
+    return sh
