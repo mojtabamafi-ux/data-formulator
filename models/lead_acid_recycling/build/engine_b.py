@@ -178,5 +178,80 @@ def eng_capex(b):
     return sh
 
 
+# ==================================================================== ENG_ALLOC
+def eng_alloc(b):
+    sh = b.sheet("ENG_ALLOC", "تخصیص مراکز هزینه (تولیدی و خدماتی)",
+                 "تخصیص هزینه‌های مراکز خدماتی به ایستگاه‌های ۱ تا ۶ بر اساس محرک‌های هزینه.",
+                 "engine")
+    S = "ENG_ALLOC"
+    NS = spec.NS
+    r_thr = b.row_of("IN_TECH", "THROUGHPUT")
+    r_wat = b.row_of("IN_TECH", "WATER")
+    drv = b.rng_at("IN_TECH", r_thr, spec.C0, r_wat, spec.C0 + NS - 1)   # $D$47:$I$52
+    lab = b.rng_at("IN_TECH", r_thr, 2, r_wat, 2)                       # $B$47:$B$52
+
+    def SC(i, k):
+        """ستونِ k از ردیفِ مرکزِ خدماتی i در IN_COST (1=محرک، 2=هزینهٔ پایه)"""
+        code = inputs.SERVICE_CENTERS[i][0]
+        return b.cellref("IN_COST", b.row_of("IN_COST", code), spec.C0 + k)
+
+    # ------------------------------------------- الف) هزینه مستقیم مراکز
+    sh.section("الف) هزینه مستقیم مراکز خدماتی")
+    for i, (_code, name, _drv, _amt, _beh) in enumerate(inputs.SERVICE_CENTERS):
+        sh.add_row("ALC.cost.%d" % (i + 1), "هزینه مرکز %d: %s" % (i + 1, name),
+                   "میلیون ریال", "num")
+        b.frow(S, "ALC.cost.%d" % (i + 1), lambda t, i=i: "=%s*%s*%s"
+               % (SC(i, 2), scen_idx(b, "idx_infl", t),
+                  b.ref("IN_MACRO", "MAC.ops_flg", t)))
+
+    # ------------------------------------------- ب) جمع محرک و وزن تخصیص
+    sh.gap()
+    sh.section("ب) جمع محرک و وزن تخصیص هر مرکز")
+    for i in range(len(inputs.SERVICE_CENTERS)):
+        key = "ALC.dtot.%d" % (i + 1)
+        sh.add_row(key, "جمع محرک مرکز %d" % (i + 1), "─", "num")
+        # محرک‌ها عددِ طراحی‌اند و به دوره وابسته نیستند → تنها یک سلول
+        b.fcell(S, sh.r - 1, spec.C0, "=SUM(INDEX(%s,MATCH(%s,%s,0),0))"
+                % (drv, SC(i, 1), lab))
+
+    for i in range(len(inputs.SERVICE_CENTERS)):
+        key = "ALC.w.%d" % (i + 1)
+        row = sh.r
+        sh.add_row(key, "وزن تخصیص مرکز %d به ایستگاه‌ها" % (i + 1), "درصد", "num3")
+        # فقط ستون‌های ایستگاه‌ها پر می‌شود (این ردیف سریِ زمانی نیست)
+        for j in range(NS):
+            b.fcell(S, row, spec.C0 + j,
+                    "=IFERROR(INDEX(%s,MATCH(%s,%s,0),%d)/%s,0)"
+                    % (drv, SC(i, 1), lab, j + 1,
+                       b.ref(S, "ALC.dtot.%d" % (i + 1), 0)))
+
+    # ------------------------------------------- ج) ماتریس تخصیص
+    sh.gap()
+    sh.section("ج) ماتریس تخصیص (مرکز × ایستگاه × سال)")
+    matrix_rows = {}
+    for i in range(len(inputs.SERVICE_CENTERS)):
+        for j in range(NS):
+            row = sh.r
+            sh.add_row(None, "مرکز %d ← ایستگاه %d" % (i + 1, j + 1), "میلیون ریال", "num")
+            matrix_rows[(i, j)] = row
+            b.frow_at(S, row, lambda t, i=i, j=j: "=%s*%s"
+                      % (b.ref(S, "ALC.cost.%d" % (i + 1), t),
+                         b.cellref(S, b.row_of(S, "ALC.w.%d" % (i + 1)), spec.C0 + j)))
+
+    # ------------------------------------------- د) جمع تخصیص‌یافته به هر ایستگاه
+    sh.gap()
+    sh.section("د) جمع تخصیص‌یافته به هر ایستگاه")
+    from openpyxl.utils import get_column_letter
+    for j in range(NS):
+        sh.add_row("ALC.station.%d" % j, "سهم ایستگاه %d از مراکز خدماتی" % (j + 1),
+                   "میلیون ریال", "num")
+        b.frow(S, "ALC.station.%d" % j, lambda t, j=j: "=%s" % "+".join(
+            "%s%d" % (get_column_letter(spec.C0 + t),
+                      matrix_rows[(i, j)])
+            for i in range(len(inputs.SERVICE_CENTERS))))
+    return sh
+
+
 def build(b):
     eng_capex(b)
+    eng_alloc(b)
