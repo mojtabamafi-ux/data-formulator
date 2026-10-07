@@ -422,3 +422,6 @@ NUL
 
 # Package manager lock files (using yarn)
 package-lock.json
+
+# مدل مالی بازیافت باتری: ابزارهای ساخت باید در مخزن بمانند
+!models/lead_acid_recycling/build/
