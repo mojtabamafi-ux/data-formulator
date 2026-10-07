@@ -252,6 +252,79 @@ def eng_alloc(b):
     return sh
 
 
+# ====================================================================== ENG_WC
+def eng_wc(b):
+    sh = b.sheet("ENG_WC", "سرمایه در گردش و چرخه تبدیل نقد",
+                 "مانده موجودی‌ها، دریافتنی‌ها و پرداختنی‌ها و استنتاج چرخه تبدیل "
+                 "نقد (CCC).", "engine")
+    S = "ENG_WC"
+
+    def R(key, t=0):
+        return b.ref(S, key, t)
+
+    def WC(key):
+        return b.ref("IN_WC", key, 0)
+
+    def dpc_opc(t):
+        return "(%s+%s)" % (b.ref("ENG_COST", "EC.dpc", t), b.ref("ENG_COST", "EC.opc", t))
+
+    sh.section("الف) اجزای سرمایه در گردش")
+    sh.add_row("WC.inv_rm", "موجودی مواد اولیه", "میلیون ریال", "num")
+    b.frow(S, "WC.inv_rm", lambda t: "=%s/365*%s"
+           % (b.ref("ENG_COST", "EC.rm", t), WC("WC.dio_rm")))
+    for key, lab, wk in [("WC.inv_wip", "موجودی کالای در جریان ساخت", "WC.dio_wip"),
+                         ("WC.inv_fg", "موجودی محصول نهایی", "WC.dio_fg")]:
+        sh.add_row(key, lab, "میلیون ریال", "num")
+        b.frow(S, key, lambda t, wk=wk: "=%s/365*%s" % (dpc_opc(t), WC(wk)))
+    sh.add_row("WC.inv_cons", "موجودی مواد مصرفی و قطعات یدکی", "میلیون ریال", "num")
+    b.frow(S, "WC.inv_cons", lambda t: "=(%s+%s)/365*%s"
+           % (b.ref("ENG_COST", "EC.tot.1", t), b.ref("ENG_COST", "EC.tot.9", t),
+              WC("WC.dio_cons")))
+    sh.add_row("WC.inv", "جمع موجودی‌ها", "میلیون ریال", "num")
+    b.frow(S, "WC.inv", lambda t: "=%s" % "+".join(
+        R(k, t) for k in ("WC.inv_rm", "WC.inv_wip", "WC.inv_fg", "WC.inv_cons")))
+    sh.add_row("WC.ar", "حساب‌های دریافتنی", "میلیون ریال", "num")
+    b.frow(S, "WC.ar", lambda t: "=%s/365*%s"
+           % (b.ref("ENG_OPS", "OPS.rev", t), WC("WC.dso")))
+    sh.add_row("WC.ap", "حساب‌های پرداختنی", "میلیون ریال", "num")
+    b.frow(S, "WC.ap", lambda t: "=%s/365*%s" % (dpc_opc(t), WC("WC.dpo")))
+    sh.add_row("WC.tax_pay", "مالیات قابل پرداخت", "میلیون ریال", "num")
+    b.frow(S, "WC.tax_pay", lambda t: "=%s/365*%s"
+           % (b.ref("ENG_COST", "EC.tax_op", t), WC("WC.dpo_tax")))
+    sh.add_row("WC.nwc", "خالص سرمایه در گردش (NWC)", "میلیون ریال", "num")
+    b.frow(S, "WC.nwc", lambda t: "=%s+%s-%s-%s"
+           % (R("WC.inv", t), R("WC.ar", t), R("WC.ap", t), R("WC.tax_pay", t)))
+    sh.add_row("WC.dwc", "تغییرات سرمایه در گردش (ΔWC)", "میلیون ریال", "num")
+    b.frow(S, "WC.dwc", lambda t: "=" + R("WC.nwc", 0) if t == 0
+           else "=" + R("WC.nwc", t) + "-" + R("WC.nwc", t - 1))
+    sh.add_row("WC.stloan", "تسهیلات کوتاه‌مدت (مانده)", "میلیون ریال", "num")
+    b.frow(S, "WC.stloan", lambda t: "=MAX(0,%s*%s)" % (R("WC.nwc", t), WC("WC.wc_loan_share")))
+    sh.add_row("WC.dstloan", "تغییرات تسهیلات کوتاه‌مدت", "میلیون ریال", "num")
+    b.frow(S, "WC.dstloan", lambda t: "=" + R("WC.stloan", 0) if t == 0
+           else "=" + R("WC.stloan", t) + "-" + R("WC.stloan", t - 1))
+
+    sh.gap()
+    sh.section("ب) چرخه تبدیل نقد (CCC)")
+    sh.add_row("WC.dio", "دوره گردش موجودی (DIO)", "روز", "num1")
+    b.frow(S, "WC.dio", lambda t: "=IFERROR(%s/(%s/365),0)" % (R("WC.inv", t), dpc_opc(t)))
+    sh.add_row("WC.dso_calc", "دوره وصول مطالبات (DSO)", "روز", "num1")
+    b.frow(S, "WC.dso_calc", lambda t: "=IFERROR(%s/(%s/365),0)"
+           % (R("WC.ar", t), b.ref("ENG_OPS", "OPS.rev", t)))
+    sh.add_row("WC.dpo_calc", "دوره پرداخت بدهی‌ها (DPO)", "روز", "num1")
+    b.frow(S, "WC.dpo_calc", lambda t: "=IFERROR(%s/(%s/365),0)" % (R("WC.ap", t), dpc_opc(t)))
+    sh.add_row("WC.ccc", "چرخه تبدیل نقد (CCC)", "روز", "num1")
+    b.frow(S, "WC.ccc", lambda t: "=%s+%s-%s"
+           % (R("WC.dio", t), R("WC.dso_calc", t), R("WC.dpo_calc", t)))
+    sh.add_row("WC.cash_opex", "هزینه نقدی سالانه (مبنای حداقل نقد)", "میلیون ریال", "num")
+    b.frow(S, "WC.cash_opex", lambda t: "=%s+%s"
+           % (b.ref("ENG_COST", "EC.var_total", t), b.ref("ENG_COST", "EC.fixed_cash", t)))
+    sh.add_row("WC.min_cash", "حداقل موجودی نقدی", "میلیون ریال", "num")
+    b.frow(S, "WC.min_cash", lambda t: "=MAX(0,%s)/365*%s"
+           % (R("WC.cash_opex", t), WC("WC.cashdays")))
+    return sh
+
+
 def build(b):
     eng_capex(b)
     eng_alloc(b)
+    eng_wc(b)
