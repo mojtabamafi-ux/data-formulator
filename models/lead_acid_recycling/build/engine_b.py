@@ -324,7 +324,187 @@ def eng_wc(b):
     return sh
 
 
+# ===================================================================== ENG_DCF
+def eng_dcf(b):
+    sh = b.sheet("ENG_DCF", "محاسبات DCF و ارزش‌گذاری",
+                 "ساخت WACC، تنزیل FCFF، محاسبهٔ NPV، IRR، MIRR، دوره بازپرداشت "
+                 "و ارزش بنگاه.", "engine")
+    S = "ENG_DCF"
+    LT = spec.NY - 1
+
+    def R(key, t=0):
+        return b.ref(S, key, t)
+
+    sh.section("الف) ساختار سرمایه و نرخ تنزیل")
+    sh.add_row("DCF.ke", "بازده مورد انتظار سهامداران (Ke)", "درصد", "pct")
+    b.frow(S, "DCF.ke", lambda t: "=%s+%s*%s+%s"
+           % (b.ref("ENG_SCEN", "SCEN.rf", t), b.ref("IN_MACRO", "MAC.beta", 0),
+              b.ref("IN_MACRO", "MAC.erp", 0), b.ref("IN_MACRO", "MAC.crp", 0)))
+    sh.add_row("DCF.kd_at", "هزینه بدهی پس از مالیات (Kd×(1−t))", "درصد", "pct")
+    b.frow(S, "DCF.kd_at", lambda t: "=(%s+%s)*(1-%s)"
+           % (b.ref("IN_FIN", "FIN.kd", 0), scen_coef(b, "KD"),
+              b.ref("IN_MACRO", "MAC.tax", 0)))
+    sh.add_row("DCF.we", "وزن حقوق صاحبان سهام", "درصد", "pct")
+    b.frow(S, "DCF.we", lambda t: "=1-%s" % b.ref("IN_FIN", "FIN.debt_share", 0))
+    sh.add_row("DCF.wd", "وزن بدهی", "درصد", "pct")
+    b.frow(S, "DCF.wd", lambda t: "=%s" % b.ref("IN_FIN", "FIN.debt_share", 0))
+    sh.add_row("DCF.wacc", "میانگین موزون هزینه سرمایه (WACC)", "درصد", "pct")
+    b.frow(S, "DCF.wacc", lambda t: "=%s*%s+%s*%s+%s"
+           % (R("DCF.we", t), R("DCF.ke", t), R("DCF.wd", t), R("DCF.kd_at", t),
+              scen_coef(b, "WACC")))
+
+    row = sh.r
+    sh.add_row("DCF.df", "ضریب تنزیل", "ضریب", "num3")
+    b.mark(S, "DCF.df", row)
+    b.frow_at(S, row, lambda t: "=1" if t == 0
+              else "=" + R("DCF.df", t - 1) + "/(1+" + R("DCF.wacc", t) + ")")
+
+    sh.gap()
+    sh.section("ب) تنزیل جریان‌های نقدی و ارزش پایانی")
+    sh.add_row("DCF.fcff", "جریان نقد آزاد پروژه (FCFF)", "میلیون ریال", "num")
+    b.frow(S, "DCF.fcff", lambda t: "=" + b.ref("ENG_FCF", "FCF.fcff", t))
+    sh.add_row("DCF.pv", "ارزش فعلی FCFF", "میلیون ریال", "num")
+    b.frow(S, "DCF.pv", lambda t: "=%s*%s" % (R("DCF.fcff", t), R("DCF.df", t)))
+    row = sh.r
+    sh.add_row("DCF.pv_cum", "ارزش فعلی تجمعی", "میلیون ریال", "num")
+    b.mark(S, "DCF.pv_cum", row)
+    b.frow_at(S, row, lambda t: "=" + R("DCF.pv", 0) if t == 0
+              else "=" + R("DCF.pv_cum", t - 1) + "+" + R("DCF.pv", t))
+    sh.add_row("DCF.tv", "ارزش پایانی (Terminal Value)", "میلیون ریال", "num")
+    b.frow(S, "DCF.tv", lambda t:
+           "=IF(%s<%s,0,IF(%s=1,MAX(0,%s)*(1+%s)/MAX(0.005,%s-%s),%s*%s))" % (
+               b.ref("IN_MACRO", "MAC.t", t), b.ref("IN_MACRO", "MAC.horizon", 0),
+               b.ref("IN_MACRO", "MAC.tv_method", 0),
+               b.ref("ENG_FCF", "FCF.fcff_rep", LT), b.ref("IN_MACRO", "MAC.g_term", 0),
+               R("DCF.wacc", LT), b.ref("IN_MACRO", "MAC.g_term", 0),
+               b.ref("ENG_FCF", "FCF.ebitda", LT), b.ref("IN_MACRO", "MAC.exit_mult", 0)))
+    sh.add_row("DCF.pv_tv", "ارزش فعلی ارزش پایانی", "میلیون ریال", "num")
+    b.frow(S, "DCF.pv_tv", lambda t: "=%s*%s" % (R("DCF.tv", t), R("DCF.df", t)))
+    sh.add_row("DCF.fcf_tv", "جریان قابل بازدهی (FCFF + ارزش پایانی)", "میلیون ریال", "num")
+    b.frow(S, "DCF.fcf_tv", lambda t: "=%s+%s" % (R("DCF.fcff", t), R("DCF.tv", t)))
+
+    # ------------------------------------------- ج) شاخص‌های ارزش‌گذاری
+    sh.gap()
+    sh.section("ج) شاخص‌های ارزش‌گذاری")
+    rng_pv = b.rng(S, "DCF.pv", 0, LT)
+    rng_pvtv = b.rng(S, "DCF.pv_tv", 0, LT)
+    rng_tv = b.rng(S, "DCF.fcf_tv", 0, LT)
+    rng_pvc = b.rng(S, "DCF.pv_cum", 0, LT)
+    rng_wacc = b.rng(S, "DCF.wacc", 0, LT)
+    rng_cum = b.rng("ENG_FCF", "FCF.fcff_cum", 0, LT)
+    rng_t = b.rng("IN_MACRO", "MAC.t", 0, LT)
+
+    def payback(cum):
+        n = "COUNTIF(%s,\"<0\")" % cum
+        return ('=IF(%s=0,0,IF(%s>=13,NA(),INDEX(%s,%s)+(0-INDEX(%s,%s))'
+                '/(INDEX(%s,%s+1)-INDEX(%s,%s))))'
+                % (n, n, rng_t, n, cum, n, cum, n, cum, n))
+
+    specs = [("DCF.npv", "ارزش فعلی خالص (NPV)", "میلیون ریال", "num",
+              "=SUM(%s)+SUM(%s)" % (rng_pv, rng_pvtv)),
+             ("DCF.irr", "نرخ بازده داخلی پروژه (IRR)", "درصد", "pct",
+              "=IFERROR(IRR(%s),NA())" % rng_tv),
+             ("DCF.mirr", "نرخ بازده داخلی تعدیل‌شده (MIRR)", "درصد", "pct",
+              "=IFERROR(MIRR(%s,(%s+%s),AVERAGE(%s)),NA())"
+              % (rng_tv, b.ref("IN_FIN", "FIN.kd", 0), scen_coef(b, "KD"), rng_wacc)),
+             ("DCF.irr_eq", "نرخ بازده داخلی سهامداران (IRR روی FCFE)", "درصد", "pct",
+              "=IFERROR(IRR(%s),NA())" % b.rng("ENG_FCF", "FCF.fcfe", 0, LT)),
+             ("DCF.pay", "دوره بازپرداشت ساده (سال)", "سال", "num1", payback(rng_cum)),
+             ("DCF.pay_d", "دوره بازپرداشت تنزیلی (سال)", "سال", "num1", payback(rng_pvc)),
+             ("DCF.pi", "شاخص سودآوری (PI)", "ضریب", "num2",
+              '=IFERROR((SUMIF(%s,">0")+SUM(%s))/ABS(SUMIF(%s,"<0")),NA())'
+              % (rng_pv, rng_pvtv, rng_pv)),
+             ("DCF.ev", "ارزش بنگاه (EV) - ارزش فعلی عملیات", "میلیون ریال", "num",
+              "=SUM(%s)-%s+SUM(%s)" % (rng_pv, R("DCF.pv", 0), rng_pvtv))]
+    for tag, lab, unit, fmt, f in specs:
+        row = sh.r
+        sh.add_row(None, lab, unit, fmt)
+        b.mark(S, tag, row)
+        b.fcell(S, row, spec.C0, f)
+
+    sh.add_row("DCF.eq_value", "ارزش حقوق صاحبان سهام (EV − بدهی خالص)",
+               "میلیون ریال", "num")
+    b.frow(S, "DCF.eq_value", lambda t: "=%s-(%s-%s)"
+           % (b.tagref(S, "DCF.ev", 0), b.ref("ENG_FCF", "FCF.debt_close", t),
+              b.ref("ENG_FCF", "FCF.cash", t)))
+    return sh
+
+
+# ====================================================================== ENG_LEV
+def eng_lev(b):
+    sh = b.sheet("ENG_LEV", "تحلیل اهرم عملیاتی و مالی",
+                 "درجه اهرم عملیاتی و مالی، نقطه سر‌به‌سر و اثر تغییر حجم فروش و "
+                 "ساختار سرمایه بر سودآوری.", "engine")
+    S = "ENG_LEV"
+
+    def R(key, t=0):
+        return b.ref(S, key, t)
+
+    def F(key, t=0):
+        return b.ref("ENG_FCF", key, t)
+
+    def C(key, t=0):
+        return b.ref("ENG_COST", key, t)
+
+    sh.section("الف) حاشیه مشارکت و نقطه سر‌به‌سر")
+    sh.add_row("LEV.rev", "درآمد خالص", "میلیون ریال", "num")
+    b.frow(S, "LEV.rev", lambda t: "=" + F("FCF.rev", t))
+    sh.add_row("LEV.var", "هزینه‌های متغیر", "میلیون ریال", "num")
+    b.frow(S, "LEV.var", lambda t: "=" + C("EC.var_total", t))
+    sh.add_row("LEV.cm", "حاشیه مشارکت", "میلیون ریال", "num")
+    b.frow(S, "LEV.cm", lambda t: "=%s-%s" % (R("LEV.rev", t), R("LEV.var", t)))
+    sh.add_row("LEV.cm_ratio", "نسبت حاشیه مشارکت", "درصد", "pct")
+    b.frow(S, "LEV.cm_ratio", lambda t: "=IFERROR(%s/%s,0)" % (R("LEV.cm", t), R("LEV.rev", t)))
+    sh.add_row("LEV.cm_ton", "حاشیه مشارکت هر تن", "میلیون ریال/تن", "num1")
+    b.frow(S, "LEV.cm_ton", lambda t: "=IFERROR(%s/%s,0)"
+           % (R("LEV.cm", t), b.ref("ENG_OPS", "OPS.sold_tons", t)))
+    sh.add_row("LEV.fixed_cash", "هزینه ثابت نقدی", "میلیون ریال", "num")
+    b.frow(S, "LEV.fixed_cash", lambda t: "=" + C("EC.fixed_cash", t))
+    sh.add_row("LEV.be_ton", "نقطه سر‌به‌سر (تن محصول)", "تن", "num")
+    b.frow(S, "LEV.be_ton", lambda t: "=IFERROR(%s/%s,0)"
+           % (R("LEV.fixed_cash", t), R("LEV.cm_ton", t)))
+    sh.add_row("LEV.be_input", "نقطه سر‌به‌سر (تن باتری ورودی)", "تن", "num")
+    b.frow(S, "LEV.be_input", lambda t: "=IFERROR(%s/%s*%s,0)"
+           % (R("LEV.be_ton", t), b.ref("ENG_OPS", "OPS.sold_tons", t),
+              b.ref("ENG_OPS", "OPS.intake", t)))
+    sh.add_row("LEV.mos", "حاشیه ایمنی", "درصد", "pct")
+    b.frow(S, "LEV.mos", lambda t: "=IFERROR(1-%s/%s,0)"
+           % (R("LEV.be_ton", t), b.ref("ENG_OPS", "OPS.sold_tons", t)))
+
+    sh.gap()
+    sh.section("ب) درجات اهرم")
+    sh.add_row("LEV.dol", "درجه اهرم عملیاتی (DOL)", "ضریب", "num2")
+    b.frow(S, "LEV.dol", lambda t: "=IFERROR(%s/%s,0)" % (R("LEV.cm", t), F("FCF.ebit", t)))
+    sh.add_row("LEV.dfl", "درجه اهرم مالی (DFL)", "ضریب", "num2")
+    b.frow(S, "LEV.dfl", lambda t: "=IFERROR(%s/%s,0)" % (F("FCF.ebit", t), F("FCF.ebt", t)))
+    sh.add_row("LEV.dtl", "درجه اهرم ترکیبی (DTL)", "ضریب", "num2")
+    b.frow(S, "LEV.dtl", lambda t: "=%s*%s" % (R("LEV.dol", t), R("LEV.dfl", t)))
+    sh.add_row("LEV.sens_ni", "تغییر سود خالص به ازای ۱٪ تغییر فروش", "درصد", "pct")
+    b.frow(S, "LEV.sens_ni", lambda t: "=" + R("LEV.dtl", t))
+
+    sh.gap()
+    sh.section("ج) بازدهی و ساختار سرمایه")
+    sh.add_row("LEV.roe", "بازده حقوق صاحبان سهام (ROE)", "درصد", "pct")
+    b.frow(S, "LEV.roe", lambda t: "=IFERROR(%s/%s,0)" % (F("FCF.ni", t), F("FCF.equity", t)))
+    sh.add_row("LEV.roa", "بازده دارایی‌ها (ROA)", "درصد", "pct")
+    b.frow(S, "LEV.roa", lambda t: "=IFERROR(%s/%s,0)" % (F("FCF.ni", t), F("FCF.assets", t)))
+    sh.add_row("LEV.roic", "بازده سرمایه به‌کارگرفته‌شده (ROIC)", "درصد", "pct")
+    b.frow(S, "LEV.roic", lambda t: "=IFERROR(%s/(%s+%s),0)"
+           % (F("FCF.nopat", t), F("FCF.ltd", t), F("FCF.equity", t)))
+    sh.add_row("LEV.de", "نسبت بدهی به حقوق صاحبان سهام", "ضریب", "num2")
+    b.frow(S, "LEV.de", lambda t: "=IFERROR(%s/%s,0)" % (F("FCF.ltd", t), F("FCF.equity", t)))
+    sh.add_row("LEV.debt_ebitda", "نسبت بدهی به EBITDA", "ضریب", "num2")
+    b.frow(S, "LEV.debt_ebitda", lambda t: "=IFERROR(%s/%s,0)"
+           % (F("FCF.ltd", t), F("FCF.ebitda", t)))
+    sh.add_row("LEV.net_debt_ebitda", "بدهی خالص به EBITDA", "ضریب", "num2")
+    b.frow(S, "LEV.net_debt_ebitda", lambda t: "=IFERROR((%s-%s)/%s,0)"
+           % (F("FCF.ltd", t), F("FCF.cash", t), F("FCF.ebitda", t)))
+    return sh
+
+
 def build(b):
     eng_capex(b)
     eng_alloc(b)
     eng_wc(b)
+    eng_dcf(b)
+    eng_lev(b)
