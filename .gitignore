@@ -425,3 +425,6 @@ package-lock.json
 
 # مدل مالی بازیافت باتری: ابزارهای ساخت باید در مخزن بمانند
 !models/lead_acid_recycling/build/
+
+# خروجی ساخت (فایل تولیدشده، در مخزن نگه داشته نمی‌شود)
+models/lead_acid_recycling/build/out/
